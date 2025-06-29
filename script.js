@@ -1,8 +1,9 @@
-const { useState, useEffect, useSyncExternalStore, useRef } = React;
+const { useState, useEffect, useSyncExternalStore, useRef, useMemo } = React;
 
 // --- Websim Setup ---
 const room = new WebsimSocket();
 const BASE_IMAGE_COLLECTION = 'future_image_base_v2';
+const CONTENT_FLAGGED_URL = '/a/8d247dfb-1184-4072-a022-dd3fff7f89b6';
 
 // --- Time Scale Configuration ---
 const TIME_RANGES = [
@@ -89,6 +90,14 @@ const ImageUploader = ({ onUploadStart, onUploadEnd }) => {
         onUploadStart();
         try {
             const persistentUrl = await websim.upload(file);
+            
+            if (persistentUrl === CONTENT_FLAGGED_URL) {
+                alert("The uploaded image was flagged for content moderation and cannot be added to the gallery.");
+                setIsLoading(false);
+                onUploadEnd();
+                return;
+            }
+
             await room.collection(BASE_IMAGE_COLLECTION).create({
                 prompt: prompt,
                 imageUrl: persistentUrl,
@@ -158,6 +167,13 @@ const BaseImageGenerator = ({ onGenerationStart, onGenerationEnd }) => {
         try {
             // 1. Generate image from prompt
             const genResult = await websim.imageGen({ prompt, aspect_ratio: "1:1" });
+
+            if (genResult.url === CONTENT_FLAGGED_URL) {
+                alert("The generated image was flagged for content moderation and cannot be used.");
+                setIsLoading(false);
+                onGenerationEnd();
+                return;
+            }
             
             // 2. We need to upload it to get a persistent URL
             // To do that, we first fetch the generated image as a blob
@@ -225,6 +241,15 @@ const BaseImageGallery = ({ baseImages, onSelect, selectedImage, isLoading }) =>
         try {
             // 1. Upload the file to get a persistent URL
             const persistentUrl = await websim.upload(file);
+
+            if (persistentUrl === CONTENT_FLAGGED_URL) {
+                alert("The uploaded image was flagged for content moderation and cannot be added to the gallery.");
+                setIsUploading(false);
+                if (fileInputRef.current) {
+                    fileInputRef.current.value = null;
+                }
+                return;
+            }
             
             // 2. Have AI generate a prompt for the image
             const imageResponse = await fetch(persistentUrl);
@@ -314,7 +339,6 @@ const FutureGenerator = ({ selectedImage }) => {
     const [loadingText, setLoadingText] = useState('');
     const [result, setResult] = useState(null);
     const [isCommenting, setIsCommenting] = useState(false);
-    const [isAddingToGallery, setIsAddingToGallery] = useState(false);
     
     useEffect(() => {
         // Reset when a new image is selected
@@ -343,37 +367,6 @@ const FutureGenerator = ({ selectedImage }) => {
             alert("An unexpected error occurred while posting the comment.");
         } finally {
             setIsCommenting(false);
-        }
-    };
-
-    const handleAddToGallery = async () => {
-        if (!result) return;
-        setIsAddingToGallery(true);
-        try {
-            // The result.imageUrl is a temporary URL from imageGen.
-            // We need to upload it to get a persistent URL.
-
-            // 1. Fetch the generated image as a blob
-            const response = await fetch(result.imageUrl);
-            const blob = await response.blob();
-            
-            const fileName = `${result.futureDescription.slice(0, 30).replace(/ /g, '_')}.png`;
-            const file = new File([blob], fileName, { type: 'image/png' });
-
-            // 2. Upload the file to websim's persistent storage
-            const persistentUrl = await websim.upload(file);
-
-            // 3. Create a record in the database
-            await room.collection(BASE_IMAGE_COLLECTION).create({
-                prompt: result.futureDescription,
-                imageUrl: persistentUrl,
-            });
-
-        } catch (error) {
-            console.error("Error adding generated image to gallery:", error);
-            alert("Sorry, something went wrong while adding the image to the gallery.");
-        } finally {
-            setIsAddingToGallery(false);
         }
     };
 
@@ -437,6 +430,13 @@ const FutureGenerator = ({ selectedImage }) => {
                 aspect_ratio: "1:1"
             });
             
+            if (finalImageResult.url === CONTENT_FLAGGED_URL) {
+                alert("The generated time-warped image was flagged for content moderation.");
+                setIsLoading(false);
+                setLoadingText('');
+                return;
+            }
+
             setResult({
                 imageUrl: finalImageResult.url,
                 baseDescription,
@@ -501,23 +501,13 @@ const FutureGenerator = ({ selectedImage }) => {
                     <div className="result-text">
                         <h4>{`AI's Vision of ${result.timeJump}:`}</h4>
                         <p>{result.futureDescription}</p>
-                        <div className="result-actions">
-                            <button 
-                                className="btn btn-primary"
-                                onClick={handlePostComment}
-                                disabled={isCommenting || isAddingToGallery}
-                            >
-                                {isCommenting ? 'Posting...' : 'Add as Comment'}
-                            </button>
-                            <button
-                                className="btn btn-icon"
-                                onClick={handleAddToGallery}
-                                disabled={isAddingToGallery || isCommenting}
-                                title="Add this generated image to the gallery"
-                            >
-                                {isAddingToGallery ? '...' : '+'}
-                            </button>
-                        </div>
+                        <button 
+                            className="btn btn-primary"
+                            onClick={handlePostComment}
+                            disabled={isCommenting}
+                        >
+                            {isCommenting ? 'Posting...' : 'Add as Comment'}
+                        </button>
                     </div>
                 </div>
             )}
@@ -547,10 +537,38 @@ const App = () => {
         }
     );
     
+    // This effect runs once when the user's data is available and checks for flagged images they own.
+    useEffect(() => {
+        if (!baseImages) return;
+
+        const checkMyImages = async () => {
+            const currentUser = await websim.getCurrentUser();
+            if (!currentUser) return;
+
+            const myFlaggedImages = baseImages.filter(img => 
+                img.username === currentUser.username && 
+                img.imageUrl === CONTENT_FLAGGED_URL
+            );
+            
+            if (myFlaggedImages.length > 0) {
+                console.log(`Found ${myFlaggedImages.length} flagged images to remove for user ${currentUser.username}.`);
+                // Use Promise.all to delete them concurrently
+                await Promise.all(
+                    myFlaggedImages.map(img => room.collection(BASE_IMAGE_COLLECTION).delete(img.id))
+                ).catch(err => {
+                    console.error("Error during batch deletion of flagged images:", err);
+                });
+            }
+        };
+
+        checkMyImages();
+    }, [baseImages]);
+
     // Reverse the array so newest images appear first
     const sortedBaseImages = React.useMemo(() => {
         if (!baseImages) return [];
-        return [...baseImages].reverse();
+        // Also filter out any flagged images from the view immediately
+        return [...baseImages].filter(img => img.imageUrl !== CONTENT_FLAGGED_URL).reverse();
     }, [baseImages]);
 
     useEffect(() => {
