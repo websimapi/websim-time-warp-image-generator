@@ -17,8 +17,11 @@ const MAX_SLIDER_VAL = TIME_RANGES.length;
 
 function getTimeLabel(sliderValue) {
     if (sliderValue === 0) return "Present Day";
-    
-    const scale = (sliderValue / MAX_SLIDER_VAL) * (TIME_RANGES.length - 1);
+
+    const isFuture = sliderValue > 0;
+    const absSliderValue = Math.abs(sliderValue);
+
+    const scale = (absSliderValue / MAX_SLIDER_VAL) * (TIME_RANGES.length - 1);
     const rangeIndex = Math.floor(scale);
     const rangeProgress = scale - rangeIndex;
 
@@ -37,7 +40,11 @@ function getTimeLabel(sliderValue) {
         unit = value === 1 ? range.singular : range.plural;
     }
 
-    return `${value} ${unit} into the future`;
+    if (isFuture) {
+        return `${value} ${unit} into the future`;
+    } else {
+        return `${value} ${unit} into the past`;
+    }
 }
 
 
@@ -185,11 +192,11 @@ const FutureGenerator = ({ selectedImage }) => {
                  messages: [
                     {
                         role: "system",
-                        content: "You are an AI expert in visual transformation over time. Your task is to rewrite an image description to reflect the passage of a specified amount of time. You must only output the new, detailed image description. Do NOT include any conversational text, introductions, or explanations like 'Here is the new description...'. The output should be a direct, high-quality prompt for an AI image generator."
+                        content: "You are an AI expert in visual transformation over time. Your task is to rewrite an image description to reflect the passage of a specified amount of time, either forward (future) or backward (past). You must only output the new, detailed image description. Do NOT include any conversational text, introductions, or explanations like 'Here is the new description...'. The output should be a direct, high-quality prompt for an AI image generator."
                     },
                     {
                         role: "user",
-                        content: `The original image description is: '${baseDescription}'. Evolve this scene by ${timeJump}. Describe the new scene in detail, focusing on how the original elements have naturally changed (e.g., decay, growth, erosion, technological evolution). Start with the core elements of the original description and build upon them with the changes.`
+                        content: `The original image description is: '${baseDescription}'. The user wants to see what this scene looked like ${timeJump}. Rewrite the description to reflect this time shift. If going to the past, imagine what the scene's components looked like before (e.g., newer, less weathered, under construction, different technology). If going to the future, describe natural changes (e.g., decay, growth, erosion, technological evolution). Start with the core elements of the original description and build upon them with the changes.`
                     }
                 ]
             });
@@ -237,7 +244,7 @@ const FutureGenerator = ({ selectedImage }) => {
                          <h3>Select a time jump:</h3>
                          <input 
                             type="range"
-                            min="0"
+                            min={-MAX_SLIDER_VAL}
                             max={MAX_SLIDER_VAL}
                             step="0.01"
                             value={sliderValue}
@@ -250,7 +257,7 @@ const FutureGenerator = ({ selectedImage }) => {
                         onClick={handleGenerateFuture}
                         disabled={isLoading || sliderValue === 0}
                     >
-                        {isLoading ? 'Generating...' : 'Generate Future Image'}
+                        {isLoading ? 'Generating...' : 'Generate Image'}
                     </button>
                 </div>
             </div>
