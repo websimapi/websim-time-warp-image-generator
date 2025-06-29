@@ -332,7 +332,8 @@ const App = () => {
     
     return (
         <>
-            <h1>Future Image Generator</h1>
+            <h1>Time Warp Image Generator</h1>
+            <p className="sub-header">Let's do the time warp AGAIN!</p>
             <BaseImageGenerator onGenerationStart={() => {}} onGenerationEnd={() => {}} />
             <BaseImageGallery 
                 baseImages={sortedBaseImages} 
