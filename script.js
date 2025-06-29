@@ -156,13 +156,12 @@ const FutureGenerator = ({ selectedImage }) => {
             const commentContent = `I warped this image ${result.timeJump}!\n\nAI's vision:\n${result.futureDescription}`;
             const postResult = await window.websim.postComment({
                 content: commentContent,
-                images: [selectedImage.imageUrl, result.imageUrl]
+                images: [selectedImage.imageUrl, result.persistentImageUrl]
             });
 
             if (postResult && postResult.error) {
                 alert(`Error posting comment: ${postResult.error}`);
             } else {
-                // You could add a more visible success message here if desired
                 console.log("Comment posted successfully");
             }
         } catch (error) {
@@ -177,24 +176,11 @@ const FutureGenerator = ({ selectedImage }) => {
         if (!result) return;
         setIsAddingToGallery(true);
         try {
-            // 1. We need to upload the generated image to get a persistent URL.
-            // First, fetch the temporary image from the generation result.
-            const response = await fetch(result.imageUrl);
-            const blob = await response.blob();
-            const file = new File([blob], `warped_${Date.now()}.png`, { type: 'image/png' });
-
-            // 2. Upload the file to websim's persistent storage
-            const persistentUrl = await websim.upload(file);
-
-            // 3. Create a record in the database with the persistent URL
             await room.collection(BASE_IMAGE_COLLECTION).create({
                 prompt: result.futureDescription,
-                imageUrl: persistentUrl,
+                imageUrl: result.persistentImageUrl,
             });
-
-            // Provide user feedback (e.g., a toast notification) could be added here
             console.log("Image added to gallery successfully");
-            
         } catch (error) {
             console.error("Error adding image to gallery:", error);
             alert("Sorry, there was an error adding the image to the gallery.");
@@ -208,14 +194,12 @@ const FutureGenerator = ({ selectedImage }) => {
         
         setIsLoading(true);
         setResult(null);
-        setLoadingText("Generating image..."); // Simplified loading message
+        setLoadingText("Generating image...");
 
         try {
             const timeJump = getTimeLabel(sliderValue);
             
-            // Step 1: Analyze the base image
-            
-            // Fetch the image and convert it to a base64 data URL
+            // Fetch the base image to pass to the description model
             const imageResponse = await fetch(selectedImage.imageUrl);
             const imageBlob = await imageResponse.blob();
             const reader = new FileReader();
@@ -225,24 +209,7 @@ const FutureGenerator = ({ selectedImage }) => {
                 reader.readAsDataURL(imageBlob);
             });
 
-            const descriptionCompletion = await websim.chat.completions.create({
-                messages: [
-                    {
-                        role: "system",
-                        content: "You are an expert at describing images in vivid detail. Focus on objects, composition, colors, lighting, and overall mood. Keep your description concise and under 200 words."
-                    },
-                    {
-                        role: "user",
-                        content: [
-                            { type: "text", text: "Describe this image in detail." },
-                            { type: "image_url", image_url: { url: imageDataUrl } }
-                        ]
-                    }
-                ]
-            });
-            const baseDescription = descriptionCompletion.content;
-
-            // Step 2: Create the "future" description
+            // Step 1: Create the "future" description
             const futureDescCompletion = await websim.chat.completions.create({
                  messages: [
                     {
@@ -251,21 +218,32 @@ const FutureGenerator = ({ selectedImage }) => {
                     },
                     {
                         role: "user",
-                        content: `The original image description is: '${baseDescription}'. The user wants to see what this scene looked like ${timeJump}. Rewrite the description to reflect this time shift. If going to the past, imagine what the scene's components looked like before (e.g., newer, less weathered, under construction, different technology). If going to the future, describe natural changes (e.g., decay, growth, erosion, technological evolution). Start with the core elements of the original description and build upon them with the changes.`
+                        content: `The user wants to see what this scene looked like ${timeJump}. The original image is attached. Rewrite the description of the attached image to reflect this time shift. If going to the past, imagine what the scene's components looked like before (e.g., newer, less weathered, under construction, different technology). If going to the future, describe natural changes (e.g., decay, growth, erosion, technological evolution). Be descriptive and create a good prompt for an image generator.`,
+                        attachments: [{
+                            "content_type": "image/png",
+                            "url": imageDataUrl
+                        }]
                     }
                 ]
             });
             const futureDescription = futureDescCompletion.content;
 
-            // Step 3: Generate the final image
+            // Step 2: Generate the final image
+            setLoadingText("Finalizing image...");
             const finalImageResult = await websim.imageGen({
                 prompt: futureDescription,
                 aspect_ratio: "1:1"
             });
+
+            // Step 3: Immediately upload the generated image to get a persistent URL
+            setLoadingText("Uploading to cloud...");
+            const tempImageResponse = await fetch(finalImageResult.url);
+            const tempImageBlob = await tempImageResponse.blob();
+            const file = new File([tempImageBlob], `warped_${Date.now()}.png`, { type: 'image/png' });
+            const persistentUrl = await websim.upload(file);
             
             setResult({
-                imageUrl: finalImageResult.url,
-                baseDescription,
+                persistentImageUrl: persistentUrl,
                 futureDescription,
                 timeJump: timeJump
             });
@@ -322,7 +300,7 @@ const FutureGenerator = ({ selectedImage }) => {
             {result && (
                 <div className="results-container">
                     <div className="result-image-display image-display">
-                        <img src={result.imageUrl} alt="Generated future image" />
+                        <img src={result.persistentImageUrl} alt="Generated future image" />
                     </div>
                     <div className="result-text">
                         <h4>{`AI's Vision of ${result.timeJump}:`}</h4>
