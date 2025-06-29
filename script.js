@@ -314,6 +314,7 @@ const FutureGenerator = ({ selectedImage }) => {
     const [loadingText, setLoadingText] = useState('');
     const [result, setResult] = useState(null);
     const [isCommenting, setIsCommenting] = useState(false);
+    const [isAddingToGallery, setIsAddingToGallery] = useState(false);
     
     useEffect(() => {
         // Reset when a new image is selected
@@ -342,6 +343,37 @@ const FutureGenerator = ({ selectedImage }) => {
             alert("An unexpected error occurred while posting the comment.");
         } finally {
             setIsCommenting(false);
+        }
+    };
+
+    const handleAddToGallery = async () => {
+        if (!result) return;
+        setIsAddingToGallery(true);
+        try {
+            // The result.imageUrl is a temporary URL from imageGen.
+            // We need to upload it to get a persistent URL.
+
+            // 1. Fetch the generated image as a blob
+            const response = await fetch(result.imageUrl);
+            const blob = await response.blob();
+            
+            const fileName = `${result.futureDescription.slice(0, 30).replace(/ /g, '_')}.png`;
+            const file = new File([blob], fileName, { type: 'image/png' });
+
+            // 2. Upload the file to websim's persistent storage
+            const persistentUrl = await websim.upload(file);
+
+            // 3. Create a record in the database
+            await room.collection(BASE_IMAGE_COLLECTION).create({
+                prompt: result.futureDescription,
+                imageUrl: persistentUrl,
+            });
+
+        } catch (error) {
+            console.error("Error adding generated image to gallery:", error);
+            alert("Sorry, something went wrong while adding the image to the gallery.");
+        } finally {
+            setIsAddingToGallery(false);
         }
     };
 
@@ -469,13 +501,23 @@ const FutureGenerator = ({ selectedImage }) => {
                     <div className="result-text">
                         <h4>{`AI's Vision of ${result.timeJump}:`}</h4>
                         <p>{result.futureDescription}</p>
-                        <button 
-                            className="btn btn-primary"
-                            onClick={handlePostComment}
-                            disabled={isCommenting}
-                        >
-                            {isCommenting ? 'Posting...' : 'Add as Comment'}
-                        </button>
+                        <div className="result-actions">
+                            <button 
+                                className="btn btn-primary"
+                                onClick={handlePostComment}
+                                disabled={isCommenting || isAddingToGallery}
+                            >
+                                {isCommenting ? 'Posting...' : 'Add as Comment'}
+                            </button>
+                            <button
+                                className="btn btn-icon"
+                                onClick={handleAddToGallery}
+                                disabled={isAddingToGallery || isCommenting}
+                                title="Add this generated image to the gallery"
+                            >
+                                {isAddingToGallery ? '...' : '+'}
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}
