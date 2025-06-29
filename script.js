@@ -141,6 +141,7 @@ const FutureGenerator = ({ selectedImage }) => {
     const [loadingText, setLoadingText] = useState('');
     const [result, setResult] = useState(null);
     const [isCommenting, setIsCommenting] = useState(false);
+    const [isAddingToGallery, setIsAddingToGallery] = useState(false);
     
     useEffect(() => {
         // Reset when a new image is selected
@@ -169,6 +170,34 @@ const FutureGenerator = ({ selectedImage }) => {
             alert("An unexpected error occurred while posting the comment.");
         } finally {
             setIsCommenting(false);
+        }
+    };
+
+    const handleAddToGallery = async () => {
+        if (!result) return;
+        setIsAddingToGallery(true);
+        try {
+            // 1. Fetch the generated image from its temporary URL
+            const response = await fetch(result.imageUrl);
+            const blob = await response.blob();
+            const file = new File([blob], `warped_${Date.now()}.png`, { type: 'image/png' });
+
+            // 2. Upload it to get a persistent URL
+            const persistentUrl = await websim.upload(file);
+
+            // 3. Create a new record in the base image gallery
+            await room.collection(BASE_IMAGE_COLLECTION).create({
+                prompt: result.futureDescription,
+                imageUrl: persistentUrl,
+            });
+
+            // Provide user feedback
+            // A more elegant solution could be a temporary success message on the button
+        } catch (error) {
+            console.error("Error adding image to gallery:", error);
+            alert("Sorry, there was an error adding the image to the gallery.");
+        } finally {
+            setIsAddingToGallery(false);
         }
     };
 
@@ -296,13 +325,22 @@ const FutureGenerator = ({ selectedImage }) => {
                     <div className="result-text">
                         <h4>{`AI's Vision of ${result.timeJump}:`}</h4>
                         <p>{result.futureDescription}</p>
-                        <button 
-                            className="btn btn-primary"
-                            onClick={handlePostComment}
-                            disabled={isCommenting}
-                        >
-                            {isCommenting ? 'Posting...' : 'Add as Comment'}
-                        </button>
+                        <div className="result-actions">
+                            <button 
+                                className="btn btn-primary"
+                                onClick={handlePostComment}
+                                disabled={isCommenting || isAddingToGallery}
+                            >
+                                {isCommenting ? 'Posting...' : 'Add as Comment'}
+                            </button>
+                            <button
+                                className="btn btn-primary"
+                                onClick={handleAddToGallery}
+                                disabled={isAddingToGallery || isCommenting}
+                            >
+                                {isAddingToGallery ? 'Adding...' : 'Add to Gallery'}
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}
