@@ -403,22 +403,37 @@ const FutureGenerator = ({ selectedImage }) => {
 const App = () => {
     const [selectedImage, setSelectedImage] = useState(null);
     const [isGalleryLoading, setIsGalleryLoading] = useState(true);
+    const [initialLoadComplete, setInitialLoadComplete] = useState(false);
 
     const baseImages = useSyncExternalStore(
         room.collection(BASE_IMAGE_COLLECTION).subscribe,
-        room.collection(BASE_IMAGE_COLLECTION).getList
-    ) || [];
+        () => {
+            const list = room.collection(BASE_IMAGE_COLLECTION).getList();
+            // This is a special value that getList can return on the very first, synchronous call,
+            // before the connection is established. It helps distinguish "connecting" from "connected and empty".
+            if (list === undefined) {
+                return undefined;
+            }
+            // Once we get a list (even an empty one), we know the initial load has happened.
+            if (!initialLoadComplete) {
+                setInitialLoadComplete(true);
+            }
+            return list || [];
+        }
+    );
     
     // Reverse the array so newest images appear first
-    const sortedBaseImages = React.useMemo(() => [...baseImages].reverse(), [baseImages]);
+    const sortedBaseImages = React.useMemo(() => {
+        if (!baseImages) return [];
+        return [...baseImages].reverse();
+    }, [baseImages]);
 
     useEffect(() => {
-        // A simple way to know when initial data has loaded.
-        // getList returns an empty array on first call, then the data.
-        if (baseImages.length > 0 || !room.collection(BASE_IMAGE_COLLECTION).isLoading()) {
+        // Hide the loader once we know the first data fetch is done.
+        if (initialLoadComplete) {
             setIsGalleryLoading(false);
         }
-    }, [baseImages]);
+    }, [initialLoadComplete]);
     
     return (
         <>
