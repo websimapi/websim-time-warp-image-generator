@@ -152,12 +152,12 @@ const FutureGenerator = ({ selectedImage }) => {
         
         setIsLoading(true);
         setResult(null);
+        setLoadingText("Generating image..."); // Simplified loading message
 
         try {
             const timeJump = getTimeLabel(sliderValue);
             
             // Step 1: Analyze the base image
-            setLoadingText("Analyzing original image...");
             
             // Fetch the image and convert it to a base64 data URL
             const imageResponse = await fetch(selectedImage.imageUrl);
@@ -187,7 +187,6 @@ const FutureGenerator = ({ selectedImage }) => {
             const baseDescription = descriptionCompletion.content;
 
             // Step 2: Create the "future" description
-            setLoadingText(`Imagining ${timeJump}...`);
             const futureDescCompletion = await websim.chat.completions.create({
                  messages: [
                     {
@@ -203,7 +202,6 @@ const FutureGenerator = ({ selectedImage }) => {
             const futureDescription = futureDescCompletion.content;
 
             // Step 3: Generate the final image
-            setLoadingText("Generating future image...");
             const finalImageResult = await websim.imageGen({
                 prompt: futureDescription,
                 aspect_ratio: "1:1"
@@ -213,6 +211,7 @@ const FutureGenerator = ({ selectedImage }) => {
                 imageUrl: finalImageResult.url,
                 baseDescription,
                 futureDescription,
+                timeJump: timeJump
             });
 
         } catch (error) {
@@ -270,7 +269,7 @@ const FutureGenerator = ({ selectedImage }) => {
                         <img src={result.imageUrl} alt="Generated future image" />
                     </div>
                     <div className="result-text">
-                        <h4>AI's Vision of the Future:</h4>
+                        <h4>{`AI's Vision of ${result.timeJump}:`}</h4>
                         <p>{result.futureDescription}</p>
                     </div>
                 </div>
