@@ -1,9 +1,8 @@
-const { useState, useEffect, useSyncExternalStore, useRef, useMemo } = React;
+const { useState, useEffect, useSyncExternalStore, useRef } = React;
 
 // --- Websim Setup ---
 const room = new WebsimSocket();
 const BASE_IMAGE_COLLECTION = 'future_image_base_v2';
-const CONTENT_FLAGGED_URL = '/a/8d247dfb-1184-4072-a022-dd3fff7f89b6';
 
 // --- Time Scale Configuration ---
 const TIME_RANGES = [
@@ -90,14 +89,6 @@ const ImageUploader = ({ onUploadStart, onUploadEnd }) => {
         onUploadStart();
         try {
             const persistentUrl = await websim.upload(file);
-            
-            if (persistentUrl === CONTENT_FLAGGED_URL) {
-                alert("The uploaded image was flagged for content moderation and cannot be added to the gallery.");
-                setIsLoading(false);
-                onUploadEnd();
-                return;
-            }
-
             await room.collection(BASE_IMAGE_COLLECTION).create({
                 prompt: prompt,
                 imageUrl: persistentUrl,
@@ -167,13 +158,6 @@ const BaseImageGenerator = ({ onGenerationStart, onGenerationEnd }) => {
         try {
             // 1. Generate image from prompt
             const genResult = await websim.imageGen({ prompt, aspect_ratio: "1:1" });
-
-            if (genResult.url === CONTENT_FLAGGED_URL) {
-                alert("The generated image was flagged for content moderation and cannot be used.");
-                setIsLoading(false);
-                onGenerationEnd();
-                return;
-            }
             
             // 2. We need to upload it to get a persistent URL
             // To do that, we first fetch the generated image as a blob
@@ -222,6 +206,7 @@ const BaseImageGenerator = ({ onGenerationStart, onGenerationEnd }) => {
 
 const BaseImageGallery = ({ baseImages, onSelect, selectedImage, isLoading }) => {
     const [isUploading, setIsUploading] = useState(false);
+    const [uploadStatus, setUploadStatus] = useState('');
     const fileInputRef = useRef(null);
 
     const handleUploadClick = () => {
@@ -239,28 +224,48 @@ const BaseImageGallery = ({ baseImages, onSelect, selectedImage, isLoading }) =>
 
         setIsUploading(true);
         try {
-            // 1. Upload the file to get a persistent URL
-            const persistentUrl = await websim.upload(file);
-
-            if (persistentUrl === CONTENT_FLAGGED_URL) {
-                alert("The uploaded image was flagged for content moderation and cannot be added to the gallery.");
-                setIsUploading(false);
-                if (fileInputRef.current) {
-                    fileInputRef.current.value = null;
-                }
-                return;
-            }
-            
-            // 2. Have AI generate a prompt for the image
-            const imageResponse = await fetch(persistentUrl);
-            const imageBlob = await imageResponse.blob();
+            setUploadStatus("Checking for duplicates...");
             const reader = new FileReader();
-            const imageDataUrl = await new Promise((resolve, reject) => {
+            const uploadedImageDataUrl = await new Promise((resolve, reject) => {
                 reader.onload = () => resolve(reader.result);
                 reader.onerror = reject;
-                reader.readAsDataURL(imageBlob);
+                reader.readAsDataURL(file);
             });
+
+            // Vision API can be slow with many images, so we check in chunks.
+            const CHUNK_SIZE = 5;
+            for (let i = 0; i < baseImages.length; i += CHUNK_SIZE) {
+                const chunk = baseImages.slice(i, i + CHUNK_SIZE);
+                const comparisonResult = await websim.chat.completions.create({
+                    messages: [
+                        {
+                            role: "system",
+                            content: `You are an AI image duplicate detector. Compare the first image (the user's upload) to the subsequent images from the gallery. If ANY of the gallery images are visually the same or extremely similar to the user's upload, you MUST respond with the single word "DUPLICATE". Otherwise, you MUST respond with the single word "UNIQUE". Do not add any explanation.`,
+                        },
+                        {
+                            role: "user",
+                            content: [
+                                { type: "text", text: "Is my uploaded image a duplicate of any of these gallery images?" },
+                                { type: "image_url", image_url: { url: uploadedImageDataUrl } },
+                                ...chunk.map(img => ({ type: "image_url", image_url: { url: img.imageUrl } }))
+                            ],
+                        },
+                    ],
+                });
+
+                if (comparisonResult.content.trim().toUpperCase() === "DUPLICATE") {
+                    alert("This image appears to be a duplicate of one already in the gallery. Please upload a different image.");
+                    setIsUploading(false);
+                    setUploadStatus('');
+                    if (fileInputRef.current) fileInputRef.current.value = null;
+                    return;
+                }
+            }
             
+            setUploadStatus("Uploading image...");
+            const persistentUrl = await websim.upload(file);
+            
+            setUploadStatus("Generating description...");
             const descriptionCompletion = await websim.chat.completions.create({
                 messages: [
                     {
@@ -271,14 +276,14 @@ const BaseImageGallery = ({ baseImages, onSelect, selectedImage, isLoading }) =>
                         role: "user",
                         content: [
                             { type: "text", text: "Describe this image." },
-                            { type: "image_url", image_url: { url: imageDataUrl } }
+                            { type: "image_url", image_url: { url: persistentUrl } }
                         ]
                     }
                 ]
             });
             const generatedPrompt = descriptionCompletion.content || "User uploaded image";
 
-            // 3. Create the record in the database
+            setUploadStatus("Adding to gallery...");
             await room.collection(BASE_IMAGE_COLLECTION).create({
                 prompt: generatedPrompt,
                 imageUrl: persistentUrl,
@@ -289,7 +294,7 @@ const BaseImageGallery = ({ baseImages, onSelect, selectedImage, isLoading }) =>
             alert("Sorry, something went wrong while adding your image to the gallery.");
         } finally {
             setIsUploading(false);
-            // Reset file input to allow uploading the same file again
+            setUploadStatus('');
             if (fileInputRef.current) {
                 fileInputRef.current.value = null;
             }
@@ -315,7 +320,7 @@ const BaseImageGallery = ({ baseImages, onSelect, selectedImage, isLoading }) =>
             <p>Select an image from the public gallery, or upload your own by clicking the `+` button.</p>
 
             {isLoading && !isUploading && <p>Loading gallery...</p>}
-            {isUploading && <p>Adding your image to the gallery...</p>}
+            {isUploading && <p>{uploadStatus || 'Processing your image...'}</p>}
 
             <div className="gallery">
                 {baseImages.map(image => (
@@ -350,16 +355,17 @@ const FutureGenerator = ({ selectedImage }) => {
         if (!result || !selectedImage) return;
         setIsCommenting(true);
         try {
-            const commentContent = `I warped this image ${result.timeJump}!\n\nAI's vision:\n${result.futureDescription}`;
+            // User wants images first, then text. The websim.postComment UI handles this layout.
+            // We just need to provide the images and text.
+            const commentContent = `I warped an image ${result.timeJump}!\n\n**AI's Vision:**\n*${result.futureDescription}*`;
             const postResult = await window.websim.postComment({
                 content: commentContent,
-                images: [selectedImage.imageUrl, result.imageUrl]
+                images: [selectedImage.imageUrl, result.imageUrl] // Order: [original, warped]
             });
 
             if (postResult && postResult.error) {
                 alert(`Error posting comment: ${postResult.error}`);
             } else {
-                // You could add a more visible success message here if desired
                 console.log("Comment posted successfully");
             }
         } catch (error) {
@@ -375,12 +381,10 @@ const FutureGenerator = ({ selectedImage }) => {
         
         setIsLoading(true);
         setResult(null);
-        setLoadingText("Generating image..."); // Simplified loading message
+        setLoadingText("Generating image...");
 
         try {
             const timeJump = getTimeLabel(sliderValue);
-            
-            // Step 1: Analyze the base image
             
             // Fetch the image and convert it to a base64 data URL
             const imageResponse = await fetch(selectedImage.imageUrl);
@@ -409,7 +413,6 @@ const FutureGenerator = ({ selectedImage }) => {
             });
             const baseDescription = descriptionCompletion.content;
 
-            // Step 2: Create the "future" description
             const futureDescCompletion = await websim.chat.completions.create({
                  messages: [
                     {
@@ -424,19 +427,11 @@ const FutureGenerator = ({ selectedImage }) => {
             });
             const futureDescription = futureDescCompletion.content;
 
-            // Step 3: Generate the final image
             const finalImageResult = await websim.imageGen({
                 prompt: futureDescription,
                 aspect_ratio: "1:1"
             });
             
-            if (finalImageResult.url === CONTENT_FLAGGED_URL) {
-                alert("The generated time-warped image was flagged for content moderation.");
-                setIsLoading(false);
-                setLoadingText('');
-                return;
-            }
-
             setResult({
                 imageUrl: finalImageResult.url,
                 baseDescription,
@@ -463,7 +458,7 @@ const FutureGenerator = ({ selectedImage }) => {
 
     return (
         <div className="card">
-            <h2>3. Travel to the Future</h2>
+            <h2>3. Travel Through Time</h2>
             <div className="generator-container">
                 <div className="image-display">
                      <img src={selectedImage.imageUrl} alt={selectedImage.prompt} />
@@ -486,7 +481,7 @@ const FutureGenerator = ({ selectedImage }) => {
                         onClick={handleGenerateFuture}
                         disabled={isLoading || sliderValue === 0}
                     >
-                        {isLoading ? 'Generating...' : 'Generate Image'}
+                        {isLoading ? 'Warping...' : 'Time Warp!'}
                     </button>
                 </div>
             </div>
@@ -506,7 +501,7 @@ const FutureGenerator = ({ selectedImage }) => {
                             onClick={handlePostComment}
                             disabled={isCommenting}
                         >
-                            {isCommenting ? 'Posting...' : 'Add as Comment'}
+                            {isCommenting ? 'Posting...' : 'Share as Comment'}
                         </button>
                     </div>
                 </div>
@@ -537,38 +532,10 @@ const App = () => {
         }
     );
     
-    // This effect runs once when the user's data is available and checks for flagged images they own.
-    useEffect(() => {
-        if (!baseImages) return;
-
-        const checkMyImages = async () => {
-            const currentUser = await websim.getCurrentUser();
-            if (!currentUser) return;
-
-            const myFlaggedImages = baseImages.filter(img => 
-                img.username === currentUser.username && 
-                img.imageUrl === CONTENT_FLAGGED_URL
-            );
-            
-            if (myFlaggedImages.length > 0) {
-                console.log(`Found ${myFlaggedImages.length} flagged images to remove for user ${currentUser.username}.`);
-                // Use Promise.all to delete them concurrently
-                await Promise.all(
-                    myFlaggedImages.map(img => room.collection(BASE_IMAGE_COLLECTION).delete(img.id))
-                ).catch(err => {
-                    console.error("Error during batch deletion of flagged images:", err);
-                });
-            }
-        };
-
-        checkMyImages();
-    }, [baseImages]);
-
     // Reverse the array so newest images appear first
     const sortedBaseImages = React.useMemo(() => {
         if (!baseImages) return [];
-        // Also filter out any flagged images from the view immediately
-        return [...baseImages].filter(img => img.imageUrl !== CONTENT_FLAGGED_URL).reverse();
+        return [...baseImages].reverse();
     }, [baseImages]);
 
     useEffect(() => {
