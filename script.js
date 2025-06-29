@@ -149,13 +149,13 @@ const FutureGenerator = ({ selectedImage }) => {
     }, [selectedImage]);
 
     const handlePostComment = async () => {
-        if (!result) return;
+        if (!result || !selectedImage) return;
         setIsCommenting(true);
         try {
-            const commentContent = `AI's Vision of ${result.timeJump}:\n\n${result.futureDescription}`;
+            const commentContent = `I warped this image ${result.timeJump}! Here's the before and after.`;
             const postResult = await window.websim.postComment({
                 content: commentContent,
-                images: [result.imageUrl]
+                images: [selectedImage.imageUrl, result.imageUrl]
             });
 
             if (postResult && postResult.error) {
