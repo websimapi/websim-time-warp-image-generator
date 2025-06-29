@@ -1,0 +1,311 @@
+const { useState, useEffect, useSyncExternalStore } = React;
+
+// --- Websim Setup ---
+const room = new WebsimSocket();
+const BASE_IMAGE_COLLECTION = 'future_image_base_v2';
+
+// --- Time Scale Configuration ---
+const TIME_RANGES = [
+    { max: 7, singular: 'day', plural: 'days', base: 0 }, // 0-7 days
+    { max: 21, singular: 'week', plural: 'weeks', base: 7, unit: 7 }, // 1-3 weeks
+    { max: 365, singular: 'month', plural: 'months', base: 21, unit: 30 }, // 1-12 months
+    { max: 100 * 365, singular: 'year', plural: 'years', base: 365, unit: 365 }, // 1-100 years
+    { max: 1000 * 365, singular: 'century', plural: 'centuries', base: 100 * 365, unit: 100 * 365 }, // 1-10 centuries
+    { max: 100000 * 365, singular: 'millennium', plural: 'millennia', base: 1000 * 365, unit: 1000 * 365 }, // 1-100 millennia
+];
+const MAX_SLIDER_VAL = TIME_RANGES.length;
+
+function getTimeLabel(sliderValue) {
+    if (sliderValue === 0) return "Present Day";
+    
+    const scale = (sliderValue / MAX_SLIDER_VAL) * (TIME_RANGES.length - 1);
+    const rangeIndex = Math.floor(scale);
+    const rangeProgress = scale - rangeIndex;
+
+    const range = TIME_RANGES[rangeIndex];
+    const rangeSpan = range.max - range.base;
+    let days = range.base + (rangeProgress * rangeSpan);
+
+    let value;
+    let unit;
+
+    if (range.unit) {
+        value = Math.max(1, Math.round(days / range.unit));
+        unit = value === 1 ? range.singular : range.plural;
+    } else {
+        value = Math.round(days);
+        unit = value === 1 ? range.singular : range.plural;
+    }
+
+    return `${value} ${unit} into the future`;
+}
+
+
+// --- React Components ---
+
+const Spinner = ({ text }) => (
+    <div className="loading-overlay">
+        <div className="spinner"></div>
+        {text && <p>{text}</p>}
+    </div>
+);
+
+const BaseImageGenerator = ({ onGenerationStart, onGenerationEnd }) => {
+    const [prompt, setPrompt] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+
+    const handleGenerate = async () => {
+        if (!prompt.trim()) return;
+        setIsLoading(true);
+        onGenerationStart();
+        try {
+            // 1. Generate image from prompt
+            const genResult = await websim.imageGen({ prompt, aspect_ratio: "1:1" });
+            
+            // 2. We need to upload it to get a persistent URL
+            // To do that, we first fetch the generated image as a blob
+            const response = await fetch(genResult.url);
+            const blob = await response.blob();
+            const file = new File([blob], `${prompt.slice(0, 20).replace(/ /g, '_')}.png`, { type: 'image/png' });
+
+            // 3. Upload the file to websim's persistent storage
+            const persistentUrl = await websim.upload(file);
+
+            // 4. Create a record in the database
+            await room.collection(BASE_IMAGE_COLLECTION).create({
+                prompt: prompt,
+                imageUrl: persistentUrl,
+            });
+
+            setPrompt('');
+        } catch (error) {
+            console.error("Error generating base image:", error);
+            alert("Sorry, something went wrong while creating the base image. Please try again.");
+        } finally {
+            setIsLoading(false);
+            onGenerationEnd();
+        }
+    };
+
+    return (
+        <div className="card">
+            <h2>1. Create a New Base Image</h2>
+            <p>Generate a new image with AI. It will be added to the public gallery for everyone to use.</p>
+            <div className="input-group">
+                <input
+                    type="text"
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    placeholder="e.g., A futuristic city skyline at sunset"
+                    disabled={isLoading}
+                />
+                <button onClick={handleGenerate} className="btn btn-primary" disabled={isLoading || !prompt.trim()}>
+                    {isLoading ? 'Generating...' : 'Generate'}
+                </button>
+            </div>
+        </div>
+    );
+};
+
+const BaseImageGallery = ({ baseImages, onSelect, selectedImage, isLoading }) => {
+    return (
+        <div className="card">
+            <h2>2. Select a Base Image from the Gallery</h2>
+            {isLoading && <p>Loading gallery...</p>}
+            <div className="gallery">
+                {baseImages.map(image => (
+                    <div
+                        key={image.id}
+                        className={`gallery-item ${selectedImage?.id === image.id ? 'selected' : ''}`}
+                        onClick={() => onSelect(image)}
+                    >
+                        <img src={image.imageUrl} alt={image.prompt} />
+                    </div>
+                ))}
+            </div>
+             {baseImages.length === 0 && !isLoading && <p>No base images yet. Why not create one?</p>}
+        </div>
+    );
+};
+
+const FutureGenerator = ({ selectedImage }) => {
+    const [sliderValue, setSliderValue] = useState(0);
+    const [isLoading, setIsLoading] = useState(false);
+    const [loadingText, setLoadingText] = useState('');
+    const [result, setResult] = useState(null);
+    
+    useEffect(() => {
+        // Reset when a new image is selected
+        setResult(null);
+        setSliderValue(0);
+    }, [selectedImage]);
+
+    const handleGenerateFuture = async () => {
+        if (!selectedImage) return;
+        
+        setIsLoading(true);
+        setResult(null);
+
+        try {
+            const timeJump = getTimeLabel(sliderValue);
+            
+            // Step 1: Analyze the base image
+            setLoadingText("Analyzing original image...");
+            
+            // Fetch the image and convert it to a base64 data URL
+            const imageResponse = await fetch(selectedImage.imageUrl);
+            const imageBlob = await imageResponse.blob();
+            const reader = new FileReader();
+            const imageDataUrl = await new Promise((resolve, reject) => {
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(imageBlob);
+            });
+
+            const descriptionCompletion = await websim.chat.completions.create({
+                messages: [
+                    {
+                        role: "system",
+                        content: "You are an expert at describing images in vivid detail. Focus on objects, composition, colors, lighting, and overall mood. Keep your description concise and under 200 words."
+                    },
+                    {
+                        role: "user",
+                        content: [
+                            { type: "text", text: "Describe this image in detail." },
+                            { type: "image_url", image_url: { url: imageDataUrl } }
+                        ]
+                    }
+                ]
+            });
+            const baseDescription = descriptionCompletion.content;
+
+            // Step 2: Create the "future" description
+            setLoadingText(`Imagining ${timeJump}...`);
+            const futureDescCompletion = await websim.chat.completions.create({
+                 messages: [
+                    {
+                        role: "system",
+                        content: "You are an AI expert in visual transformation over time. Your task is to rewrite an image description to reflect the passage of a specified amount of time. You must only output the new, detailed image description. Do NOT include any conversational text, introductions, or explanations like 'Here is the new description...'. The output should be a direct, high-quality prompt for an AI image generator."
+                    },
+                    {
+                        role: "user",
+                        content: `The original image description is: '${baseDescription}'. Evolve this scene by ${timeJump}. Describe the new scene in detail, focusing on how the original elements have naturally changed (e.g., decay, growth, erosion, technological evolution). Start with the core elements of the original description and build upon them with the changes.`
+                    }
+                ]
+            });
+            const futureDescription = futureDescCompletion.content;
+
+            // Step 3: Generate the final image
+            setLoadingText("Generating future image...");
+            const finalImageResult = await websim.imageGen({
+                prompt: futureDescription,
+                aspect_ratio: "1:1"
+            });
+            
+            setResult({
+                imageUrl: finalImageResult.url,
+                baseDescription,
+                futureDescription,
+            });
+
+        } catch (error) {
+            console.error("Error generating future image:", error);
+            alert("Sorry, an error occurred during the future generation process. Please try again.");
+        } finally {
+            setIsLoading(false);
+            setLoadingText('');
+        }
+    };
+
+    if (!selectedImage) {
+        return (
+            <div className="card">
+                <div className="placeholder-text">Select a base image above to begin.</div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="card">
+            <h2>3. Travel to the Future</h2>
+            <div className="generator-container">
+                <div className="image-display">
+                     <img src={selectedImage.imageUrl} alt={selectedImage.prompt} />
+                </div>
+                <div className="controls">
+                    <div className="slider-container">
+                         <h3>Select a time jump:</h3>
+                         <input 
+                            type="range"
+                            min="0"
+                            max={MAX_SLIDER_VAL}
+                            step="0.01"
+                            value={sliderValue}
+                            onChange={(e) => setSliderValue(parseFloat(e.target.value))}
+                         />
+                         <div id="time-label">{getTimeLabel(sliderValue)}</div>
+                    </div>
+                    <button 
+                        className="btn btn-primary btn-large" 
+                        onClick={handleGenerateFuture}
+                        disabled={isLoading || sliderValue === 0}
+                    >
+                        {isLoading ? 'Generating...' : 'Generate Future Image'}
+                    </button>
+                </div>
+            </div>
+            
+            {isLoading && <Spinner text={loadingText} />}
+
+            {result && (
+                <div className="results-container">
+                    <div className="result-image-display image-display">
+                        <img src={result.imageUrl} alt="Generated future image" />
+                    </div>
+                    <div className="result-text">
+                        <h4>AI's Vision of the Future:</h4>
+                        <p>{result.futureDescription}</p>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+const App = () => {
+    const [selectedImage, setSelectedImage] = useState(null);
+    const [isGalleryLoading, setIsGalleryLoading] = useState(true);
+
+    const baseImages = useSyncExternalStore(
+        room.collection(BASE_IMAGE_COLLECTION).subscribe,
+        room.collection(BASE_IMAGE_COLLECTION).getList
+    ) || [];
+    
+    // Reverse the array so newest images appear first
+    const sortedBaseImages = React.useMemo(() => [...baseImages].reverse(), [baseImages]);
+
+    useEffect(() => {
+        // A simple way to know when initial data has loaded.
+        // getList returns an empty array on first call, then the data.
+        if (baseImages.length > 0 || room.collection(BASE_IMAGE_COLLECTION).getList().length === 0) {
+            setIsGalleryLoading(false);
+        }
+    }, [baseImages]);
+    
+    return (
+        <>
+            <h1>Future Image Generator</h1>
+            <BaseImageGenerator onGenerationStart={() => {}} onGenerationEnd={() => {}} />
+            <BaseImageGallery 
+                baseImages={sortedBaseImages} 
+                selectedImage={selectedImage}
+                onSelect={setSelectedImage}
+                isLoading={isGalleryLoading}
+            />
+            <FutureGenerator selectedImage={selectedImage} />
+        </>
+    );
+};
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);
