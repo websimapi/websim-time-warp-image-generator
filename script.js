@@ -1,4 +1,4 @@
-const { useState, useEffect, useSyncExternalStore } = React;
+const { useState, useEffect, useSyncExternalStore, useRef } = React;
 
 // --- Websim Setup ---
 const room = new WebsimSocket();
@@ -186,8 +186,8 @@ const BaseImageGenerator = ({ onGenerationStart, onGenerationEnd }) => {
 
     return (
         <div className="card">
-            <h2>Or... Generate a New Base Image</h2>
-            <p>Generate a new image with AI. It will also be added to the public gallery.</p>
+            <h2>1. Generate a Base Image</h2>
+            <p>Generate a new image with AI. It will be added to the public gallery for everyone to warp.</p>
             <div className="input-group">
                 <input
                     type="text"
@@ -205,10 +205,93 @@ const BaseImageGenerator = ({ onGenerationStart, onGenerationEnd }) => {
 };
 
 const BaseImageGallery = ({ baseImages, onSelect, selectedImage, isLoading }) => {
+    const [isUploading, setIsUploading] = useState(false);
+    const fileInputRef = useRef(null);
+
+    const handleUploadClick = () => {
+        fileInputRef.current?.click();
+    };
+
+    const handleFileSelected = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        if (file.size > 5 * 1024 * 1024) { // 5MB limit
+            alert("File is too large. Please select an image under 5MB.");
+            return;
+        }
+
+        setIsUploading(true);
+        try {
+            // 1. Upload the file to get a persistent URL
+            const persistentUrl = await websim.upload(file);
+            
+            // 2. Have AI generate a prompt for the image
+            const imageResponse = await fetch(persistentUrl);
+            const imageBlob = await imageResponse.blob();
+            const reader = new FileReader();
+            const imageDataUrl = await new Promise((resolve, reject) => {
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(imageBlob);
+            });
+            
+            const descriptionCompletion = await websim.chat.completions.create({
+                messages: [
+                    {
+                        role: "system",
+                        content: "You are an expert at describing images for an AI image generator. Describe the main subject, style, and composition of the image. Be concise. Your output will be used as a prompt. Do not use conversational language."
+                    },
+                    {
+                        role: "user",
+                        content: [
+                            { type: "text", text: "Describe this image." },
+                            { type: "image_url", image_url: { url: imageDataUrl } }
+                        ]
+                    }
+                ]
+            });
+            const generatedPrompt = descriptionCompletion.content || "User uploaded image";
+
+            // 3. Create the record in the database
+            await room.collection(BASE_IMAGE_COLLECTION).create({
+                prompt: generatedPrompt,
+                imageUrl: persistentUrl,
+            });
+
+        } catch (error) {
+            console.error("Error handling uploaded image:", error);
+            alert("Sorry, something went wrong while adding your image to the gallery.");
+        } finally {
+            setIsUploading(false);
+            // Reset file input to allow uploading the same file again
+            if (fileInputRef.current) {
+                fileInputRef.current.value = null;
+            }
+        }
+    };
+    
     return (
         <div className="card">
-            <h2>2. Select a Base Image from the Gallery</h2>
-            {isLoading && <p>Loading gallery...</p>}
+            <div className="gallery-header">
+                <h2>2. Select a Base Image</h2>
+                <button className="btn-icon" onClick={handleUploadClick} disabled={isUploading || isLoading} title="Upload your own image">
+                    {isUploading ? '...' : '+'}
+                </button>
+                <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleFileSelected}
+                    style={{ display: 'none' }}
+                    accept="image/png, image/jpeg, image/webp"
+                    disabled={isUploading}
+                />
+            </div>
+            <p>Select an image from the public gallery, or upload your own by clicking the `+` button.</p>
+
+            {isLoading && !isUploading && <p>Loading gallery...</p>}
+            {isUploading && <p>Adding your image to the gallery...</p>}
+
             <div className="gallery">
                 {baseImages.map(image => (
                     <div
@@ -220,7 +303,7 @@ const BaseImageGallery = ({ baseImages, onSelect, selectedImage, isLoading }) =>
                     </div>
                 ))}
             </div>
-             {baseImages.length === 0 && !isLoading && <p>No base images yet. Why not create one?</p>}
+             {baseImages.length === 0 && !isLoading && !isUploading && <p>No base images yet. Why not create or upload one?</p>}
         </div>
     );
 };
@@ -439,7 +522,6 @@ const App = () => {
         <>
             <h1>Time Warp Image Generator</h1>
             <p className="sub-header">Let's do the time warp AGAIN!</p>
-            <ImageUploader onUploadStart={() => {}} onUploadEnd={() => {}} />
             <BaseImageGenerator onGenerationStart={() => {}} onGenerationEnd={() => {}} />
             <BaseImageGallery 
                 baseImages={sortedBaseImages} 

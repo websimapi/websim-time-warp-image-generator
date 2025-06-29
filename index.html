@@ -403,6 +403,45 @@
         .upload-controls input[type="text"] {
             width: calc(100% - 32px); /* Account for padding */
         }
+
+        .gallery-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px; /* Same as old h2 margin */
+        }
+
+        .gallery-header h2 {
+            margin-bottom: 0; /* Remove margin from h2 as it's now in a flex container */
+        }
+        
+        .btn-icon {
+            background: transparent;
+            border: 1px solid var(--primary-color);
+            color: var(--primary-color);
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            font-size: 24px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease-in-out;
+            padding: 0;
+            line-height: 1;
+        }
+        
+        .btn-icon:hover:not(:disabled) {
+            background-color: var(--primary-color);
+            color: var(--background-color);
+            box-shadow: var(--glow-shadow);
+        }
+
+        .btn-icon:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
