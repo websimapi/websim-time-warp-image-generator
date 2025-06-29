@@ -177,22 +177,24 @@ const FutureGenerator = ({ selectedImage }) => {
         if (!result) return;
         setIsAddingToGallery(true);
         try {
-            // 1. Fetch the generated image from its temporary URL
+            // 1. We need to upload the generated image to get a persistent URL.
+            // First, fetch the temporary image from the generation result.
             const response = await fetch(result.imageUrl);
             const blob = await response.blob();
             const file = new File([blob], `warped_${Date.now()}.png`, { type: 'image/png' });
 
-            // 2. Upload it to get a persistent URL
+            // 2. Upload the file to websim's persistent storage
             const persistentUrl = await websim.upload(file);
 
-            // 3. Create a new record in the base image gallery
+            // 3. Create a record in the database with the persistent URL
             await room.collection(BASE_IMAGE_COLLECTION).create({
                 prompt: result.futureDescription,
                 imageUrl: persistentUrl,
             });
 
-            // Provide user feedback
-            // A more elegant solution could be a temporary success message on the button
+            // Provide user feedback (e.g., a toast notification) could be added here
+            console.log("Image added to gallery successfully");
+            
         } catch (error) {
             console.error("Error adding image to gallery:", error);
             alert("Sorry, there was an error adding the image to the gallery.");
