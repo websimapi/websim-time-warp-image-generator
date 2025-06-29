@@ -140,12 +140,37 @@ const FutureGenerator = ({ selectedImage }) => {
     const [isLoading, setIsLoading] = useState(false);
     const [loadingText, setLoadingText] = useState('');
     const [result, setResult] = useState(null);
+    const [isCommenting, setIsCommenting] = useState(false);
     
     useEffect(() => {
         // Reset when a new image is selected
         setResult(null);
         setSliderValue(0);
     }, [selectedImage]);
+
+    const handlePostComment = async () => {
+        if (!result) return;
+        setIsCommenting(true);
+        try {
+            const commentContent = `AI's Vision of ${result.timeJump}:\n\n${result.futureDescription}`;
+            const postResult = await window.websim.postComment({
+                content: commentContent,
+                images: [result.imageUrl]
+            });
+
+            if (postResult && postResult.error) {
+                alert(`Error posting comment: ${postResult.error}`);
+            } else {
+                // You could add a more visible success message here if desired
+                console.log("Comment posted successfully");
+            }
+        } catch (error) {
+            console.error("Error posting comment:", error);
+            alert("An unexpected error occurred while posting the comment.");
+        } finally {
+            setIsCommenting(false);
+        }
+    };
 
     const handleGenerateFuture = async () => {
         if (!selectedImage) return;
@@ -271,6 +296,13 @@ const FutureGenerator = ({ selectedImage }) => {
                     <div className="result-text">
                         <h4>{`AI's Vision of ${result.timeJump}:`}</h4>
                         <p>{result.futureDescription}</p>
+                        <button 
+                            className="btn btn-primary"
+                            onClick={handlePostComment}
+                            disabled={isCommenting}
+                        >
+                            {isCommenting ? 'Posting...' : 'Add as Comment'}
+                        </button>
                     </div>
                 </div>
             )}
