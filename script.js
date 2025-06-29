@@ -57,6 +57,96 @@ const Spinner = ({ text }) => (
     </div>
 );
 
+const ImageUploader = ({ onUploadStart, onUploadEnd }) => {
+    const [file, setFile] = useState(null);
+    const [previewUrl, setPreviewUrl] = useState(null);
+    const [prompt, setPrompt] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const fileInputRef = React.useRef(null);
+
+    const handleFileChange = (e) => {
+        const selectedFile = e.target.files[0];
+        if (selectedFile) {
+            if (selectedFile.size > 5 * 1024 * 1024) { // 5MB limit
+                alert("File is too large. Please select an image under 5MB.");
+                return;
+            }
+            setFile(selectedFile);
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                setPreviewUrl(event.target.result);
+            };
+            reader.readAsDataURL(selectedFile);
+        }
+    };
+
+    const handleUpload = async () => {
+        if (!file || !prompt.trim()) {
+            alert("Please select a file and provide a description.");
+            return;
+        }
+        setIsLoading(true);
+        onUploadStart();
+        try {
+            const persistentUrl = await websim.upload(file);
+            await room.collection(BASE_IMAGE_COLLECTION).create({
+                prompt: prompt,
+                imageUrl: persistentUrl,
+            });
+            // Reset form
+            setFile(null);
+            setPreviewUrl(null);
+            setPrompt('');
+            if(fileInputRef.current) {
+                fileInputRef.current.value = null;
+            }
+        } catch (error) {
+            console.error("Error uploading image:", error);
+            alert("Sorry, something went wrong while uploading the image. Please try again.");
+        } finally {
+            setIsLoading(false);
+            onUploadEnd();
+        }
+    };
+
+    return (
+        <div className="card">
+            <h2>1. Upload Your Own Base Image</h2>
+            <p>Upload an image from your device. It will be added to the public gallery for everyone to warp.</p>
+            <div className="upload-area">
+                <div className="file-input-wrapper">
+                     <button className="btn btn-primary" onClick={() => fileInputRef.current?.click()} disabled={isLoading}>
+                        Choose Image
+                    </button>
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/png, image/jpeg, image/webp"
+                        onChange={handleFileChange}
+                        disabled={isLoading}
+                    />
+                </div>
+
+                {previewUrl && (
+                    <div className="upload-controls">
+                        <img src={previewUrl} alt="Image preview" className="image-preview" />
+                         <input
+                            type="text"
+                            value={prompt}
+                            onChange={(e) => setPrompt(e.target.value)}
+                            placeholder="Describe your image (e.g., 'A photo of my dog')"
+                            disabled={isLoading}
+                        />
+                        <button onClick={handleUpload} className="btn btn-primary" disabled={isLoading || !file || !prompt.trim()}>
+                            {isLoading ? 'Uploading...' : 'Upload & Add to Gallery'}
+                        </button>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
 const BaseImageGenerator = ({ onGenerationStart, onGenerationEnd }) => {
     const [prompt, setPrompt] = useState('');
     const [isLoading, setIsLoading] = useState(false);
@@ -96,8 +186,8 @@ const BaseImageGenerator = ({ onGenerationStart, onGenerationEnd }) => {
 
     return (
         <div className="card">
-            <h2>1. Create a New Base Image</h2>
-            <p>Generate a new image with AI. It will be added to the public gallery for everyone to use.</p>
+            <h2>Or... Generate a New Base Image</h2>
+            <p>Generate a new image with AI. It will also be added to the public gallery.</p>
             <div className="input-group">
                 <input
                     type="text"
@@ -141,7 +231,6 @@ const FutureGenerator = ({ selectedImage }) => {
     const [loadingText, setLoadingText] = useState('');
     const [result, setResult] = useState(null);
     const [isCommenting, setIsCommenting] = useState(false);
-    const [isAddingToGallery, setIsAddingToGallery] = useState(false);
     
     useEffect(() => {
         // Reset when a new image is selected
@@ -156,12 +245,13 @@ const FutureGenerator = ({ selectedImage }) => {
             const commentContent = `I warped this image ${result.timeJump}!\n\nAI's vision:\n${result.futureDescription}`;
             const postResult = await window.websim.postComment({
                 content: commentContent,
-                images: [selectedImage.imageUrl, result.persistentImageUrl]
+                images: [selectedImage.imageUrl, result.imageUrl]
             });
 
             if (postResult && postResult.error) {
                 alert(`Error posting comment: ${postResult.error}`);
             } else {
+                // You could add a more visible success message here if desired
                 console.log("Comment posted successfully");
             }
         } catch (error) {
@@ -172,34 +262,19 @@ const FutureGenerator = ({ selectedImage }) => {
         }
     };
 
-    const handleAddToGallery = async () => {
-        if (!result) return;
-        setIsAddingToGallery(true);
-        try {
-            await room.collection(BASE_IMAGE_COLLECTION).create({
-                prompt: result.futureDescription,
-                imageUrl: result.persistentImageUrl,
-            });
-            console.log("Image added to gallery successfully");
-        } catch (error) {
-            console.error("Error adding image to gallery:", error);
-            alert("Sorry, there was an error adding the image to the gallery.");
-        } finally {
-            setIsAddingToGallery(false);
-        }
-    };
-
     const handleGenerateFuture = async () => {
         if (!selectedImage) return;
         
         setIsLoading(true);
         setResult(null);
-        setLoadingText("Generating image...");
+        setLoadingText("Generating image..."); // Simplified loading message
 
         try {
             const timeJump = getTimeLabel(sliderValue);
             
-            // Fetch the base image to pass to the description model
+            // Step 1: Analyze the base image
+            
+            // Fetch the image and convert it to a base64 data URL
             const imageResponse = await fetch(selectedImage.imageUrl);
             const imageBlob = await imageResponse.blob();
             const reader = new FileReader();
@@ -209,7 +284,24 @@ const FutureGenerator = ({ selectedImage }) => {
                 reader.readAsDataURL(imageBlob);
             });
 
-            // Step 1: Create the "future" description
+            const descriptionCompletion = await websim.chat.completions.create({
+                messages: [
+                    {
+                        role: "system",
+                        content: "You are an expert at describing images in vivid detail. Focus on objects, composition, colors, lighting, and overall mood. Keep your description concise and under 200 words."
+                    },
+                    {
+                        role: "user",
+                        content: [
+                            { type: "text", text: "Describe this image in detail." },
+                            { type: "image_url", image_url: { url: imageDataUrl } }
+                        ]
+                    }
+                ]
+            });
+            const baseDescription = descriptionCompletion.content;
+
+            // Step 2: Create the "future" description
             const futureDescCompletion = await websim.chat.completions.create({
                  messages: [
                     {
@@ -218,32 +310,21 @@ const FutureGenerator = ({ selectedImage }) => {
                     },
                     {
                         role: "user",
-                        content: `The user wants to see what this scene looked like ${timeJump}. The original image is attached. Rewrite the description of the attached image to reflect this time shift. If going to the past, imagine what the scene's components looked like before (e.g., newer, less weathered, under construction, different technology). If going to the future, describe natural changes (e.g., decay, growth, erosion, technological evolution). Be descriptive and create a good prompt for an image generator.`,
-                        attachments: [{
-                            "content_type": "image/png",
-                            "url": imageDataUrl
-                        }]
+                        content: `The original image description is: '${baseDescription}'. The user wants to see what this scene looked like ${timeJump}. Rewrite the description to reflect this time shift. If going to the past, imagine what the scene's components looked like before (e.g., newer, less weathered, under construction, different technology). If going to the future, describe natural changes (e.g., decay, growth, erosion, technological evolution). Start with the core elements of the original description and build upon them with the changes.`
                     }
                 ]
             });
             const futureDescription = futureDescCompletion.content;
 
-            // Step 2: Generate the final image
-            setLoadingText("Finalizing image...");
+            // Step 3: Generate the final image
             const finalImageResult = await websim.imageGen({
                 prompt: futureDescription,
                 aspect_ratio: "1:1"
             });
-
-            // Step 3: Immediately upload the generated image to get a persistent URL
-            setLoadingText("Uploading to cloud...");
-            const tempImageResponse = await fetch(finalImageResult.url);
-            const tempImageBlob = await tempImageResponse.blob();
-            const file = new File([tempImageBlob], `warped_${Date.now()}.png`, { type: 'image/png' });
-            const persistentUrl = await websim.upload(file);
             
             setResult({
-                persistentImageUrl: persistentUrl,
+                imageUrl: finalImageResult.url,
+                baseDescription,
                 futureDescription,
                 timeJump: timeJump
             });
@@ -300,27 +381,18 @@ const FutureGenerator = ({ selectedImage }) => {
             {result && (
                 <div className="results-container">
                     <div className="result-image-display image-display">
-                        <img src={result.persistentImageUrl} alt="Generated future image" />
+                        <img src={result.imageUrl} alt="Generated future image" />
                     </div>
                     <div className="result-text">
                         <h4>{`AI's Vision of ${result.timeJump}:`}</h4>
                         <p>{result.futureDescription}</p>
-                        <div className="result-actions">
-                            <button 
-                                className="btn btn-primary"
-                                onClick={handlePostComment}
-                                disabled={isCommenting || isAddingToGallery}
-                            >
-                                {isCommenting ? 'Posting...' : 'Add as Comment'}
-                            </button>
-                            <button
-                                className="btn btn-primary"
-                                onClick={handleAddToGallery}
-                                disabled={isAddingToGallery || isCommenting}
-                            >
-                                {isAddingToGallery ? 'Adding...' : 'Add to Gallery'}
-                            </button>
-                        </div>
+                        <button 
+                            className="btn btn-primary"
+                            onClick={handlePostComment}
+                            disabled={isCommenting}
+                        >
+                            {isCommenting ? 'Posting...' : 'Add as Comment'}
+                        </button>
                     </div>
                 </div>
             )}
@@ -343,7 +415,7 @@ const App = () => {
     useEffect(() => {
         // A simple way to know when initial data has loaded.
         // getList returns an empty array on first call, then the data.
-        if (baseImages.length > 0 || room.collection(BASE_IMAGE_COLLECTION).getList().length === 0) {
+        if (baseImages.length > 0 || !room.collection(BASE_IMAGE_COLLECTION).isLoading()) {
             setIsGalleryLoading(false);
         }
     }, [baseImages]);
@@ -352,6 +424,7 @@ const App = () => {
         <>
             <h1>Time Warp Image Generator</h1>
             <p className="sub-header">Let's do the time warp AGAIN!</p>
+            <ImageUploader onUploadStart={() => {}} onUploadEnd={() => {}} />
             <BaseImageGenerator onGenerationStart={() => {}} onGenerationEnd={() => {}} />
             <BaseImageGallery 
                 baseImages={sortedBaseImages} 

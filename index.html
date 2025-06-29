@@ -363,15 +363,45 @@
             margin-top: 15px;
         }
 
-        .result-actions {
+        .upload-area {
             display: flex;
-            gap: 10px;
-            margin-top: 15px;
+            flex-direction: column;
+            gap: 15px;
+            align-items: flex-start;
         }
 
-        .result-actions .btn {
-            margin-top: 0;
-            flex-grow: 1;
+        .file-input-wrapper {
+            position: relative;
+            display: inline-block;
+        }
+
+        .file-input-wrapper input[type="file"] {
+            position: absolute;
+            left: 0;
+            top: 0;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+
+        .image-preview {
+            max-width: 200px;
+            max-height: 200px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            margin-top: 10px;
+        }
+
+        .upload-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            width: 100%;
+        }
+
+        .upload-controls input[type="text"] {
+            width: calc(100% - 32px); /* Account for padding */
         }
     </style>
 </head>
